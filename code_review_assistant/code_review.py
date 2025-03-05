@@ -4,8 +4,9 @@
 import os
 import sys
 import argparse
+import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TextIO
 
 # Import the CakePHP analyzer
 try:
@@ -56,6 +57,7 @@ def review_code(
     temperature: float = 0.1,
     base_url: str = "http://127.0.0.1:11434",
     request_timeout: float = 60.0,
+    output_file: Optional[str] = None,
 ) -> None:
     """
     Perform a code review on the specified file.
@@ -68,6 +70,7 @@ def review_code(
         temperature: Temperature parameter for generation
         base_url: Base URL for Ollama API
         request_timeout: Timeout for API requests in seconds
+        output_file: Optional path to save the review results
     """
     # Check if file exists
     if not os.path.exists(file_path):
@@ -248,45 +251,63 @@ Please consider the above project context in your code review.
     # Execute review
     review_response = llm.complete(review_prompt)
 
-    # Display results
-    print("\n" + "=" * 80)
-    print(f"【Code Review Results: {file_path}】")
-    print("=" * 80)
+    # Open output file if specified
+    output_stream = open(output_file, 'w', encoding='utf-8') if output_file else sys.stdout
 
-    # Display CakePHP-specific issues if available
-    if cakephp_issues and cakephp_issues["total_issues"] > 0:
-        print("CakePHP Specific Issues:")
-        print("-" * 40)
-        print(f"Total issues found: {cakephp_issues['total_issues']}")
+    try:
+        # Display results
+        print_output(output_stream, "\n" + "=" * 80)
+        print_output(output_stream, f"【Code Review Results: {file_path}】")
+        print_output(output_stream, "=" * 80)
 
-        if cakephp_issues["critical"]:
-            print("\nCRITICAL ISSUES:")
-            for issue in cakephp_issues["critical"]:
-                file_info = issue["file"]
-                if "line" in issue:
-                    file_info += f":{issue['line']}"
-                print(f"[{issue['type']}] {file_info}")
-                print(f"  {issue['message']}")
+        # Display CakePHP-specific issues if available
+        if cakephp_issues and cakephp_issues["total_issues"] > 0:
+            print_output(output_stream, "CakePHP Specific Issues:")
+            print_output(output_stream, "-" * 40)
+            print_output(output_stream, f"Total issues found: {cakephp_issues['total_issues']}")
 
-        if cakephp_issues["high"]:
-            print("\nHIGH SEVERITY ISSUES:")
-            for issue in cakephp_issues["high"]:
-                file_info = issue["file"]
-                if "line" in issue:
-                    file_info += f":{issue['line']}"
-                print(f"[{issue['type']}] {file_info}")
-                print(f"  {issue['message']}")
+            if cakephp_issues["critical"]:
+                print_output(output_stream, "\nCRITICAL ISSUES:")
+                for issue in cakephp_issues["critical"]:
+                    file_info = issue["file"]
+                    if "line" in issue:
+                        file_info += f":{issue['line']}"
+                    print_output(output_stream, f"[{issue['type']}] {file_info}")
+                    print_output(output_stream, f"  {issue['message']}")
 
-        # Add medium and warning issues summary
-        for severity in ["medium", "warning"]:
-            if cakephp_issues[severity]:
-                print(f"\n{severity.upper()} ISSUES: {len(cakephp_issues[severity])}")
+            if cakephp_issues["high"]:
+                print_output(output_stream, "\nHIGH SEVERITY ISSUES:")
+                for issue in cakephp_issues["high"]:
+                    file_info = issue["file"]
+                    if "line" in issue:
+                        file_info += f":{issue['line']}"
+                    print_output(output_stream, f"[{issue['type']}] {file_info}")
+                    print_output(output_stream, f"  {issue['message']}")
 
-        print("\n" + "-" * 40)
+            # Add medium and warning issues summary
+            for severity in ["medium", "warning"]:
+                if cakephp_issues[severity]:
+                    print_output(output_stream, f"\n{severity.upper()} ISSUES: {len(cakephp_issues[severity])}")
 
-    print("\nGeneral Code Review:")
-    print(review_response.text)
-    print("=" * 80)
+            print_output(output_stream, "\n" + "-" * 40)
+
+        print_output(output_stream, "\nGeneral Code Review:")
+        print_output(output_stream, review_response.text)
+        print_output(output_stream, "=" * 80)
+    finally:
+        # Close file if it was opened
+        if output_file and output_stream != sys.stdout:
+            output_stream.close()
+            print(f"Review results saved to: {output_file}")
+
+def print_output(output_stream: TextIO, message: str) -> None:
+    """Print message to the specified output stream.
+
+    Args:
+        output_stream: The output stream to write to (file or stdout)
+        message: The message to print
+    """
+    print(message, file=output_stream)
 
 def main():
     parser = argparse.ArgumentParser(description="Code review tool using Ollama")
@@ -297,8 +318,24 @@ def main():
     parser.add_argument("--temperature", "-t", type=float, default=0.1, help="Temperature parameter for generation")
     parser.add_argument("--base-url", "-u", default="http://127.0.0.1:11434", help="Base URL for Ollama API")
     parser.add_argument("--request-timeout", "-r", type=float, default=60.0, help="Timeout for API requests in seconds")
+    parser.add_argument("--output", "-o", help="Path to save the review results (defaults to terminal output)")
+    parser.add_argument("--log-dir", "-l", help="Directory to save log files (auto-generates filenames)")
 
     args = parser.parse_args()
+
+    # Determine output file path
+    output_file = None
+    if args.output:
+        output_file = args.output
+    elif args.log_dir:
+        # Create log directory if it doesn't exist
+        log_dir = Path(args.log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create filename based on the reviewed file and timestamp
+        filename = os.path.basename(args.file_path)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = str(log_dir / f"review_{filename}_{timestamp}.txt")
 
     review_code(
         args.file_path,
@@ -308,6 +345,7 @@ def main():
         args.temperature,
         args.base_url,
         args.request_timeout,
+        output_file,
     )
 
 if __name__ == "__main__":
