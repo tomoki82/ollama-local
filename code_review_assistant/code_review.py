@@ -7,6 +7,17 @@ import argparse
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
+# Import the CakePHP analyzer
+try:
+    from cakephp_analyzer import analyze_cakephp
+except ImportError:
+    # If imported from a different directory
+    try:
+        from code_review_assistant.cakephp_analyzer import analyze_cakephp
+    except ImportError:
+        print("Warning: Could not import CakePHP analyzer. CakePHP-specific analysis will be disabled.")
+        analyze_cakephp = None
+
 from llama_index.core import Settings, load_index_from_storage, StorageContext
 try:
     from llama_index_llms_ollama import Ollama
@@ -170,10 +181,110 @@ Please consider the above project context in your code review.
     # Execute review
     review_response = llm.complete(review_prompt)
 
+    # Check if it's a CakePHP file and analyze with CakePHP analyzer
+    cakephp_issues = None
+    if analyze_cakephp and (file_extension in ['.php', '.ctp'] or '/cakephp' in file_path.lower() or '/cake' in file_path.lower()):
+        print("Detected potential CakePHP file. Running CakePHP-specific analysis...")
+
+        # Try to find the CakePHP project root
+        project_root = file_path
+        cakephp_markers = ['app/Controller', 'app/Model', 'app/View', 'app/Config', 'lib/Cake']
+
+        while os.path.dirname(project_root) != project_root:  # Stop at filesystem root
+            project_root = os.path.dirname(project_root)
+            # Check if this directory has CakePHP structure
+            if any(os.path.exists(os.path.join(project_root, marker)) for marker in cakephp_markers):
+                break
+
+        if project_root == os.path.dirname(project_root):  # If we reached filesystem root
+            project_root = os.path.dirname(file_path)  # Default to the file's directory
+
+        print(f"Using CakePHP project root: {project_root}")
+
+        try:
+            cakephp_issues = analyze_cakephp(project_root, output_format=None)
+
+            # Add CakePHP issues to prompt
+            if cakephp_issues and cakephp_issues["total_issues"] > 0:
+                cake_issues_str = []
+
+                if cakephp_issues["critical"]:
+                    cake_issues_str.append("CRITICAL ISSUES:")
+                    for issue in cakephp_issues["critical"]:
+                        issue_str = f"[{issue['type']}] {issue['file']}"
+                        if "line" in issue:
+                            issue_str += f":{issue['line']}"
+                        issue_str += f" - {issue['message']}"
+                        cake_issues_str.append(issue_str)
+
+                if cakephp_issues["high"]:
+                    cake_issues_str.append("\nHIGH SEVERITY ISSUES:")
+                    for issue in cakephp_issues["high"]:
+                        issue_str = f"[{issue['type']}] {issue['file']}"
+                        if "line" in issue:
+                            issue_str += f":{issue['line']}"
+                        issue_str += f" - {issue['message']}"
+                        cake_issues_str.append(issue_str)
+
+                # Add medium and warning issues
+                for severity in ["medium", "warning"]:
+                    if cakephp_issues[severity]:
+                        cake_issues_str.append(f"\n{severity.upper()} ISSUES:")
+                        for issue in cakephp_issues[severity]:
+                            issue_str = f"[{issue['type']}] {issue['file']}"
+                            if "line" in issue:
+                                issue_str += f":{issue['line']}"
+                            issue_str += f" - {issue['message']}"
+                            cake_issues_str.append(issue_str)
+
+                # Add to review prompt
+                review_prompt += "\n\nCakePHP Specific Analysis Results:\n"
+                review_prompt += "\n".join(cake_issues_str)
+                review_prompt += "\n\nPlease address these CakePHP specific issues in your review."
+        except Exception as e:
+            print(f"Error during CakePHP analysis: {e}")
+            print("Continuing with standard code review...")
+
+    # Execute review
+    review_response = llm.complete(review_prompt)
+
     # Display results
     print("\n" + "=" * 80)
     print(f"【Code Review Results: {file_path}】")
     print("=" * 80)
+
+    # Display CakePHP-specific issues if available
+    if cakephp_issues and cakephp_issues["total_issues"] > 0:
+        print("CakePHP Specific Issues:")
+        print("-" * 40)
+        print(f"Total issues found: {cakephp_issues['total_issues']}")
+
+        if cakephp_issues["critical"]:
+            print("\nCRITICAL ISSUES:")
+            for issue in cakephp_issues["critical"]:
+                file_info = issue["file"]
+                if "line" in issue:
+                    file_info += f":{issue['line']}"
+                print(f"[{issue['type']}] {file_info}")
+                print(f"  {issue['message']}")
+
+        if cakephp_issues["high"]:
+            print("\nHIGH SEVERITY ISSUES:")
+            for issue in cakephp_issues["high"]:
+                file_info = issue["file"]
+                if "line" in issue:
+                    file_info += f":{issue['line']}"
+                print(f"[{issue['type']}] {file_info}")
+                print(f"  {issue['message']}")
+
+        # Add medium and warning issues summary
+        for severity in ["medium", "warning"]:
+            if cakephp_issues[severity]:
+                print(f"\n{severity.upper()} ISSUES: {len(cakephp_issues[severity])}")
+
+        print("\n" + "-" * 40)
+
+    print("\nGeneral Code Review:")
     print(review_response.text)
     print("=" * 80)
 
